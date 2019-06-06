@@ -54,17 +54,21 @@ function usage_subcommand ()
             printf "    -g          Graphics type       (default: spice)\n"
             printf "    -h          Display help\n"
             printf "    -i          Custom QCOW2 Image\n"
+            printf "    -I          Interface name\n"
             printf "    -k          SSH Public Key      (default: $HOME/.ssh/id_rsa.pub)\n"
             printf "    -l          Location of Images  (default: $HOME/virt/images)\n"
             printf "    -L          Location of VMs     (default: $HOME/virt/vms)\n"
             printf "    -m          Memory Size (MB)    (default: 1024)\n"
             printf "    -M          Mac address         (default: auto-assigned)\n"
+	    printf "    -n          ip address          (default: dhcp)\n"
+	    printf "    -N          ip netmask          (default: 255.255.255.0)\n"
             printf "    -p          Console port        (default: auto)\n"
             printf "    -s          Custom shell script\n"
             printf "    -t          Linux Distribution  (default: centos7)\n"
             printf "    -T          Timezone            (default: US/Eastern)\n"
             printf "    -u          Custom user         (default: $USER)\n"
             printf "    -v          Be verbose\n"
+            printf "    -w          Default gateway\n"
             printf "\n"
             printf "DISTRIBUTIONS\n"
             printf "    NAME            DESCRIPTION                         LOGIN\n"
@@ -197,7 +201,7 @@ function delete_vm ()
     else
         output "Domain ${VMNAME} does not exist"
     fi
-    
+
     [[ -d ${VMDIR}/${VMNAME} ]] && DISKDIR=${VMDIR}/${VMNAME} || DISKDIR=${IMAGEDIR}/${VMNAME}
     [ -d $DISKDIR ] \
         && outputn "Deleting ${VMNAME} files" \
@@ -303,7 +307,7 @@ function fetch_images ()
 
     if [ ! -f ${IMAGEDIR}/${QCOW} ]
     then
-        output "Cloud image not found.  Downloading"
+        output "Cloud image not found. Downloading"
         set_wget
         ${WGET} --directory-prefix ${IMAGEDIR} ${IMAGE_URL}/${QCOW} || \
             die "Could not download image."
@@ -438,6 +442,7 @@ users:
       ssh-authorized-keys:
         - ${KEY}
 
+
 # Configure where output will go
 output:
   all: ">> /var/log/cloud-init.log"
@@ -476,7 +481,25 @@ _EOF_
 _EOF_
     fi
 
-    { echo "instance-id: ${VMNAME}"; echo "local-hostname: ${VMNAME}"; } > $META_DATA
+    {
+	echo "instance-id: ${VMNAME}";
+	echo "local-hostname: ${VMNAME}";
+
+if [[ "${NET_IP}" == "dhcp" ]]; then
+	echo "
+network-interfaces: |
+  iface ${NET_IFACE} inet dhcp";
+else
+	echo "
+network-interfaces: |
+  iface ${NET_IFACE} inet static
+  address ${NET_IP}
+  netmask ${NET_MASK}
+  gateway ${NET_GATEWAY}
+";
+fi
+
+} > $META_DATA
 
     outputn "Copying cloud image ($(basename ${IMAGE}))"
     DISK=${VMNAME}.qcow2
@@ -551,11 +574,10 @@ _EOF_
         printf "      --memory ${MEMORY} \\ \n"
         printf "      --vcpus ${CPUS} \\ \n"
         printf "      --cpu ${FEATURE} \\ \n"
-        printf "      --disk ${DISK},format=qcow2,bus=virtio \\ \n"
-        printf "      --disk ${CI_ISO},device=cdrom \\ \n"
+        printf "      --disk path=${VMDIR}/${VMNAME}/${DISK} \\ \n"
+        printf "      --disk path=${VMDIR}/${VMNAME}/${CI_ISO},device=cdrom \\ \n"
         printf "      --network ${NETWORK_PARAMS} \\ \n"
         printf "      --os-type=linux \\ \n"
-        printf "      --os-variant=${OS_VARIANT} \\ \n"
         printf "      --graphics ${GRAPHICS},port=${PORT},listen=localhost \\ \n"
         printf "      --noautoconsole  \n"
     else
@@ -563,18 +585,19 @@ _EOF_
     fi
 
     # Call virt-install to import the cloud image and create a new VM
-    (virt-install --import \
+    (virt-install \
+	--import \
         --name ${VMNAME} \
         --memory ${MEMORY} \
         --vcpus ${CPUS} \
         --cpu ${FEATURE} \
-        --disk ${DISK},format=qcow2,bus=virtio \
-        --disk ${CI_ISO},device=cdrom \
+        --disk path=${VMDIR}/${VMNAME}/${DISK} \
+        --disk path=${VMDIR}/${VMNAME}/${CI_ISO},device=cdrom \
         --network ${NETWORK_PARAMS} \
         --os-type=linux \
-        --os-variant=${OS_VARIANT} \
         --graphics ${GRAPHICS},port=${PORT},listen=localhost \
-        --noautoconsole &>> ${VMNAME}.log && ok ) \
+	--noautoconsole \
+	&>> ${VMNAME}.log && ok ) \
         || die "Could not create domain with virt-install."
 
     virsh dominfo ${VMNAME} &>> ${VMNAME}.log
@@ -705,7 +728,7 @@ function set_custom_defaults ()
 function create ()
 {
     # Parse command line arguments
-    while getopts ":b:c:d:D:f:g:i:k:l:L:m:M:p:s:t:T:u:ahv" opt
+    while getopts "a:b:c:d:D:f:g:i:I:k:l:L:m:M:n:N:p:s:t:T:u:w:ahv" opt
     do
         case "$opt" in
             a ) AUTOSTART=${OPTARG} ;;
@@ -716,21 +739,28 @@ function create ()
             f ) FEATURE="${OPTARG}" ;;
             g ) GRAPHICS="${OPTARG}" ;;
             i ) IMAGE="${OPTARG}" ;;
+            I ) NET_IFACE="${OPTARG}" ;;
             k ) PUBKEY="${OPTARG}" ;;
             l ) IMAGEDIR="${OPTARG}" ;;
             L ) VMDIR="${OPTARG}" ;;
             m ) MEMORY="${OPTARG}" ;;
             M ) MACADDRESS="${OPTARG}" ;;
+            n ) NET_IP="${OPTARG}" ;;
+            N ) NET_MASK="${OPTARG}" ;;
             p ) PORT="${OPTARG}" ;;
             s ) SCRIPTNAME="${OPTARG}" ;;
             t ) DISTRO="${OPTARG}" ;;
             T ) TIMEZONE="${OPTARG}" ;;
             u ) ADDITIONAL_USER="${OPTARG}" ;;
+            w ) NET_GATEWAY="${OPTARG}" ;;
             v ) VERBOSE=1 ;;
             h ) usage ;;
-            * ) die "Unsupported option. Run 'kvm-install-vm help create'." ;;
+            * ) die "Unsupported option $opt. Run 'kvm-install-vm help create'." ;;
         esac
     done
+
+    [[ x"${NET_IP}" == "x" ]] && NET_IP=dhcp
+
 
     shift $((OPTIND - 1))
 
